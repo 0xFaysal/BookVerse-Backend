@@ -18,6 +18,7 @@ app.use(cookieParser());
 
 // Routes
 app.get("/", (req, res) => {
+    console.log(req.query);
     res.json({message: "Server is running "});
 });
 
