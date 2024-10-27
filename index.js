@@ -20,11 +20,34 @@ app.use(
     cors({
         origin: ["http://localhost:5173"],
         credentials: true,
+        sameSite: "none",
+        secure: false,
     })
 );
 app.use(express.json());
 app.use(cookieParser());
 app.use("/upload/user", express.static("upload/user"));
+
+//Custom middleware
+const verifyToken = (req, res, next) => {
+    const token = req.cookies.token;
+    console.log("Token", token);
+    if (!token) {
+        return res.status(401).json({error: "Unauthorized"});
+    }
+
+    console.log(token);
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_Secrate);
+        req.user = decoded;
+        console.log("Decoded", decoded);
+        next();
+    } catch (error) {
+        return res
+            .status(401)
+            .json({error: "Unauthorized request", message: error});
+    }
+};
 
 // Multer setup
 const storage = multer.memoryStorage();
@@ -46,23 +69,37 @@ async function run() {
         // Database Name
         const db = client.db("Bookverse");
         const users = db.collection("users");
+        const books = db.collection("books");
+        console.log("Connected to the database");
 
         app.post("/login", async (req, res) => {
-            const {email, uId} = req.body;
-
+            const {email, uId, name, metadata, profilePic} = req.body;
+            console.log(email, uId, name, metadata);
+            console.log("Called it");
+            const user = await users.findOne({email: email});
+            if (!user) {
+                await users.insertOne({
+                    email: email,
+                    uId: uId,
+                    name: name,
+                    profilePic: profilePic,
+                    metadata: metadata,
+                });
+            }
             const token = jwt.sign(
                 {
                     email: email,
                     uId: uId,
                 },
                 process.env.JWT_Secrate,
-                {expiresIn: "1h"}
+                {expiresIn: "12h"}
             );
             res.cookie("token", token, {
                 httpOnly: true,
                 secure: false,
-                sameSite: "none",
+                // sameSite: none,
             });
+            console.log("Logged in", token);
             res.json({message: "Logged in", token});
         });
 
@@ -94,9 +131,72 @@ async function run() {
                 res.status(500).json({error: "Invalid file type"});
             }
         });
-    } finally {
+
+        app.post(
+            "/addBook",
+            verifyToken,
+            upload.single("photo"),
+            async (req, res) => {
+                const {email, uId} = req.user;
+                const {
+                    name,
+                    authorName,
+                    quantity,
+                    category,
+                    shortDescription,
+                    rating,
+                } = req.body;
+                const fileBuffer = req.file.buffer;
+                const optimizedFileName =
+                    Date.now() * Math.round(Math.random() * 1000) +
+                    "-" +
+                    req.file.originalname;
+
+                const optimizedFilePath = path.join(
+                    "upload/BookCovers",
+                    optimizedFileName
+                );
+
+                try {
+                    await sharp(fileBuffer)
+                        .jpeg({quality: 50})
+                        .toFile(optimizedFilePath);
+                    console.log(
+                        `Image optimized and saved to ${optimizedFilePath}`
+                    );
+
+                    await books.insertOne({
+                        name: name,
+                        authorName: authorName,
+                        quantity: parseInt(quantity),
+                        category: category,
+                        shortDescription: shortDescription,
+                        rating: rating,
+                        photo: optimizedFilePath,
+                        email: email,
+                        uId: uId,
+                    });
+                } catch (error) {
+                    console.error(`Error processing image: ${error.message}`);
+                    res.status(500).json({
+                        error: "Invalid file type ",
+                        message: "Book not added",
+                    });
+                }
+
+                res.status(200).json({message: "Book added successfully."});
+            }
+        );
+
+        app.get("/logout", (req, res) => {
+            res.clearCookie("token");
+            res.json({message: "Logged out"});
+        });
+    } catch (e) {
+        console.error(e);
     }
 }
+
 run().catch(console.dir);
 
 // Routes
